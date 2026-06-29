@@ -6,6 +6,10 @@
 #include <string> 
 #include <glm/glm.hpp>
 #include <algorithm>
+#include "Manager.hpp"
+#include "renderer/camera.hpp"
+#include <unordered_map>
+#include "StaticGrid.hpp"
 
 // Структура для описания найденного изолированного фрагмента
 struct VoxelIsland {
@@ -15,75 +19,41 @@ struct VoxelIsland {
 };
 
 
-
-class BvhBuilder {
-public:
-    std::vector<GpuBvhNode> flatNodes;
-
-    void Build(const std::vector<GpuEntityMeta>& entities);
-
-private:
-    int BuildRecursive(const std::vector<GpuEntityMeta>& entities,
-        std::vector<int>& indices,
-        size_t start,
-        size_t end);
-};
-
 class VoxelScene {
 public:
-    std::vector<VoxelObject> objects;
+    VoxelManager manager;
+    Camera camera;
+
+    std::vector<uint32_t> objectIDs;
     int selectedObjectIndex = -1;
 
-    // Загрузка
-    bool LoadVox(const std::string& path);
 
-    // Разделение объектов
-    void SplitObject(size_t objectIndex);
+    VoxelScene() : manager(100000) {}
+
+    void Init();
+
+    void Update(float dt);
+
+    // Высокоуровневые операции (Управление объектами)
+    uint32_t LoadVox(const std::string& path);
+    void UnregisterObject(uint32_t objId)
+    {
+        manager.UnregisterObject(objId);
+    }; 
+
+    VoxelObject& GetObject(uint32_t objId) {
+        return manager.GetObject(objId);
+    }
+
+    void SplitObject(uint32_t objectIndex);
     std::vector<VoxelIsland> FindIslands(const VoxelObject& srcObj);
-
-    // Обновление GPU
-    void UpdateAndUploadToGpu();
-    void UploadTransforms();
-    void UpdateTransforms();
-    void DeleteGPUBuffers();
-
-    // Частичное обновление только грязных бриков
-    void UpdateDirtyBricks(std::vector<uint32_t>& macroGrid,
-        std::vector<Brick>& bricks,
-        std::vector<GpuEntityMeta>& metaBuffer);
-
-    // Полная упаковка одного объекта (для новых)
-    void PackObjectFull(size_t objIndex,
-        std::vector<uint32_t>& macroGrid,
-        std::vector<Brick>& bricks,
-        std::vector<Material>& materials,
-        std::vector<GpuEntityMeta>& metaBuffer);
-    
-
-    // Сборка данных
-    void CollectMetaData(std::vector<GpuEntityMeta>& metaBuffer);
-    void CollectVoxelData(std::vector<uint32_t>& macroGridLenta,
-        std::vector<Brick>& brickLenta,
-        std::vector<Material>& materialsLenta,
-        std::vector<GpuEntityMeta>& metaBuffer);
-
-    // Загрузка на GPU
-    void UploadMetaBuffer(const std::vector<GpuEntityMeta>& metaBuffer);
-    void UploadMacroGrid(const std::vector<uint32_t>& macroGridLenta);
-    void UploadBricks(const std::vector<Brick>& brickLenta);
-    void UploadMaterials(const std::vector<Material>& materialsLenta);
-    void UploadBVH(const std::vector<GpuBvhNode>& bvhNodes);
-
-
     bool RemoveVoxelByRay(glm::vec3 rayOrigin, glm::vec3 rayDir);
 
-    // Кэш и буферы
-    std::vector<GpuEntityMeta> gpuMetaCache;
-    GLuint metaSSBO = 0;
-    GLuint macroLentaSSBO = 0;
-    GLuint brickLentaSSBO = 0;
-    GLuint materialsSSBO = 0;
-    GLuint bvhSSBO = 0;
+    // 4. КОМПОНЕНТЫ СИСТЕМЫ РЕНДЕРИНГА
+    // Здесь остаются ТОЛЬКО те буферы, которые собираются со всей сцены глобально каждый кадр
+    std::vector<GpuEntityMeta> gpuMetaCache; // Кэш матриц и AABB для отправки на GPU
+    GLuint metaSSBO = 0;                     // Буфер метаданных всех объектов сцены
+    GLuint bvhSSBO = 0;                      // Буфер глобального BVH-дерева для Raymarching шейдера
 
     size_t lastObjectCount = 0;
 };

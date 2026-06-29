@@ -28,7 +28,7 @@ public:
     void ProcessInput(GLFWwindow* window, float dt);
     void ProcessMouse(GLFWwindow* window);
 
-private:
+public:
     glm::vec3 forward;
     glm::vec3 position;
     glm::vec3 rotation; 
@@ -36,7 +36,7 @@ private:
     glm::mat4 view;
     glm::mat4 projection;
 
-    float speed = 200.0f;
+    float speed = 10.0f;
     float sensitivity = 0.1f;
 
     bool firstMouse = true;

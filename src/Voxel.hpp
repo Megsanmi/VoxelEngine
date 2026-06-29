@@ -5,8 +5,6 @@
 #include <cstdint>
 #include <unordered_map>
 
-
-
 struct Voxel {
     uint8_t ID = 0;
 
@@ -15,15 +13,14 @@ struct Voxel {
         return ID == 0;
     }
 };
-struct GpuBvhNode {
+struct BVHNode {
     glm::vec4 boxMin = glm::vec4(0.0f);    // .xyz = Мировой AABB min, .w = Индекс левого сына
     glm::vec4 boxMax = glm::vec4(0.0f);    // .xyz = Мировой AABB max, .w = Индекс правого сына
     glm::ivec4 metaData = glm::ivec4(-1);  // .x = Индекс объекта в MetaBuffer (если лист, иначе -1)
 }; // Ровно 48 байт
 
 #pragma pack(push, 1)
-struct  Material
-{
+struct  Material {
     uint8_t Color[3] = { 0, 0, 0 };
     uint8_t MetalFuzziness = 255;
     float Emission = 0.0f;
@@ -107,8 +104,9 @@ struct Sector {
 };
 
 struct VoxelMap {
+
     std::unordered_map<uint32_t, Sector> Sectors;
-    Material materials[256];
+
 
     glm::uvec3 size;
 
@@ -173,4 +171,3 @@ struct VoxelMap {
         brick->Data[voxelIdx].ID = color565;
     }
 };
-

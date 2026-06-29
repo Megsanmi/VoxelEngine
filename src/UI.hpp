@@ -77,29 +77,30 @@ private:
 
         // Статистика
         ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "FPS: %.1f", fps);
-        ImGui::Text("Objects: %zu", scene->objects.size());
+        ImGui::DragFloat3("Camera pos: ", &scene->camera.position.x);
+        ImGui::Text("Objects: %zu", scene->objectIDs.size());
 
         ImGui::Separator();
 
         // Список объектов
-        for (int i = 0; i < scene->objects.size(); i++)
+        for (int i = 0; i < scene->objectIDs.size(); i++)
         {
             ImGui::PushID(i);
 
             // Подсветка выделенного объекта
-            if (scene->selectedObjectIndex == i)
+            if (scene->selectedObjectIndex == scene->objectIDs[i])
             {
                 ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.3f, 0.5f, 0.8f, 0.8f));
             }
 
-            std::string label = "Object " + std::to_string(i);
+            std::string label = "Object " + std::to_string(scene->objectIDs[i]);
 
-            if (ImGui::Selectable(label.c_str(), scene->selectedObjectIndex == i))
+            if (ImGui::Selectable(label.c_str(), scene->selectedObjectIndex == scene->objectIDs[i]))
             {
-                scene->selectedObjectIndex = i;
+                scene->selectedObjectIndex = scene->objectIDs[i];
             }
 
-            if (scene->selectedObjectIndex == i)
+            if (scene->selectedObjectIndex == scene->objectIDs[i])
             {
                 ImGui::PopStyleColor();
             }
@@ -110,10 +111,11 @@ private:
         ImGui::Separator();
 
         // Инспектор выделенного объекта
-        if (scene->selectedObjectIndex >= 0 && scene->selectedObjectIndex < scene->objects.size())
+        if (scene->selectedObjectIndex >= 0)
         {
             ImGui::Text("Selected: Object %d", scene->selectedObjectIndex);
-            scene->objects[scene->selectedObjectIndex].transform.drawInspector();
+            scene->manager.GetObject(scene->selectedObjectIndex).transform.drawInspector();
+            if (ImGui::Button("deleteobj")) scene->manager.UnregisterObject(scene->selectedObjectIndex);
         }
 
         ImGui::End();

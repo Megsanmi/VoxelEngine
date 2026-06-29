@@ -10,22 +10,26 @@
 #include <cmath>
 #include <cfloat>
 #include <cstring>
+#include <algorithm>
 
 #include "Voxel.hpp"
 #include "imgui/imgui.h"
 
+enum class VoxelObjectType : uint32_t {
+    DunamicObject = 0, // Обычный объект (показываем в инспекторах, крутим, физика)
+    WorldChunk = 1  // Чанк мира (скрытый, статичный)
+};
 
 class Transform {
 public:
     glm::vec3 position{ 0, 0, 0 };
     glm::vec3 rotationEuler{ 0, 0, 0 };
-    glm::vec3 scale{ 1, 1, 1 };
+    glm::vec3 scale{ 0.1, 0.1, 0.1 };
     glm::quat qrotation{ 1, 0, 0, 0 };
 
     glm::vec3 oldposition{ 0, 0, 0 };
     glm::vec3 oldrotationEuler{ 0, 0, 0 };
-    glm::vec3 oldscale{ 1, 1, 1 };
-    
+    glm::vec3 oldscale{ 0.1, 0.1, 0.1 };
 
     bool isDirty = false;
 
@@ -35,10 +39,11 @@ public:
         rotationEuler.z = wrapAngle(rotationEuler.z);
         qrotation = glm::normalize(glm::quat(glm::radians(rotationEuler)));
 
-        if (position != oldposition || rotationEuler != oldrotationEuler) {
+        if (position != oldposition || rotationEuler != oldrotationEuler || scale != oldscale) {
             isDirty = true;
             oldposition = position;
             oldrotationEuler = rotationEuler;
+            oldscale = scale;
         }
         else {
             isDirty = false;
@@ -71,6 +76,43 @@ private:
     }
 };
 
+class Chunk
+{
+public:
+    glm::ivec3 pos = glm::ivec3(0);
+    uint32_t macroOffset = 0;
+    uint32_t id = 0;
+
+
+    static constexpr int CHUNK_SIZE = 64;
+
+    int bricksX = CHUNK_SIZE/8;
+    int bricksY = CHUNK_SIZE/8;
+    int bricksZ = CHUNK_SIZE/8;
+    
+    VoxelMap voxelMap;
+
+    // Оператор перемещающего присваивания (ЕГО СЕЙЧАС НЕ ХВАТАЕТ)
+    Chunk& operator=(Chunk&& other) noexcept = default;
+
+    // Явно запрещаем копирование, чтобы избежать случайных тяжелых аллокаций
+    Chunk(const Chunk&) = delete;
+    Chunk& operator=(const Chunk&) = delete;
+
+    Chunk() {
+        voxelMap.size = glm::vec3(CHUNK_SIZE);
+
+    }
+    uint32_t GetMacroIndex(int bx, int by, int bz) const {
+        return static_cast<uint32_t>(bx + bz * bricksX + by * (bricksX * bricksZ));
+    }
+};
+
+struct alignas(16) GpuChunkMeta {
+    glm::ivec4 pos;  // xyz = позиция, w = macroOffset
+    uint32_t BVHnode;
+};
+
 struct alignas(16) GpuEntityMeta {
     glm::mat4 invModelMatrix;
     glm::mat4 modelMatrix;
@@ -80,16 +122,27 @@ struct alignas(16) GpuEntityMeta {
     glm::ivec4 sizeInVoxels;  // xyz = размер в вокселях, w = matOffset
 };
 
+
 class VoxelObject {
 public:
     Transform transform;
     VoxelMap voxelMap;
+    Material materials[256];
 
-    // Флаги для отслеживания изменений
-    bool isDirty = true;         // Изменился трансформ
-    bool voxelsChanged = true;   // Изменилась геометрия (новый объект)
-    bool materialsChanged = true;// Изменились материалы (новый объект)
-    bool isNew = true;           // Только что создан
+    uint32_t id = 0;
+
+    unsigned int macroGridOffset = 0;
+    unsigned int matOffset = 0;
+
+    VoxelObjectType type = VoxelObjectType::DunamicObject;
+
+    glm::vec3 min;
+    glm::vec3 max;
+
+    bool isDirty = true;
+    bool voxelsChanged = true;
+    bool materialsChanged = true;
+    bool isNew = true;
 
     int bricksX = 0;
     int bricksY = 0;
@@ -102,16 +155,25 @@ public:
         bricksZ = (voxelMap.size.z + 7) >> 3;
     }
 
-    void Update(float dt)
-    {
+    VoxelObject() : bricksX(0), bricksY(0), bricksZ(0) {
+        voxelMap.size = glm::uvec3(0);
+    }
+
+    void Update(float dt) {
         transform.Update(dt);
-        isDirty = transform.isDirty;
+        if (transform.isDirty) {
+            isDirty = true;
+        }
+        CalculateWorldAABB();
+    }
+
+    unsigned int GetMacroGridSize() {
+        return bricksX * bricksY * bricksZ;
     }
 
     uint32_t GetMacroIndex(int bx, int by, int bz) const {
         return static_cast<uint32_t>(bx + bz * bricksX + by * (bricksX * bricksZ));
     }
-
 
     bool intersectAABB(glm::vec3 ro, glm::vec3 rd, glm::vec3 bmin, glm::vec3 bmax, float& tMin, float& tMax) {
         glm::vec3 invRd = 1.0f / (rd + glm::vec3(1e-8f));
@@ -123,24 +185,70 @@ public:
         tMax = glm::min(glm::min(tmax3.x, tmax3.y), tmax3.z);
         return tMin <= tMax && tMax > 0.0f;
     }
+   
+    void CalculateWorldAABB() {
+        // Локальные границы воксельного объекта (от 0 до размера в вокселях)
+        glm::vec3 localMin(0.0f);
+        glm::vec3 localMax(static_cast<float>(voxelMap.size.x),
+            static_cast<float>(voxelMap.size.y),
+            static_cast<float>(voxelMap.size.z));
 
-    bool RemoveVoxelByRay(glm::vec3 worldRo, glm::vec3 worldRd, float maxDist = 1000.0f) {
-        // Трансформируем луч в локальное пространство
-        glm::mat4 invModel = glm::inverse(transform.GetMatrix());
+        // Массив из 8 вершин локального куба объекта
+        glm::vec3 vertices[8] = {
+            glm::vec3(localMin.x, localMin.y, localMin.z),
+            glm::vec3(localMax.x, localMin.y, localMin.z),
+            glm::vec3(localMin.x, localMax.y, localMin.z),
+            glm::vec3(localMax.x, localMax.y, localMin.z),
+            glm::vec3(localMin.x, localMin.y, localMax.z),
+            glm::vec3(localMax.x, localMin.y, localMax.z),
+            glm::vec3(localMin.x, localMax.y, localMax.z),
+            glm::vec3(localMax.x, localMax.y, localMax.z)
+        };
+
+        // Получаем правильную финальную матрицу (с учетом смещения пивота для мебели)
+        glm::mat4 modelMatrix = GetFinalModelMatrix();
+
+        // Инициализируем выходные границы экстремальными значениями
+        min = glm::vec3(FLT_MAX);
+        max = glm::vec3(-FLT_MAX);
+
+        // Трансформируем каждую из 8 вершин в мировые координаты и обновляем границы
+        for (int i = 0; i < 8; ++i) {
+            glm::vec4 worldPos = modelMatrix * glm::vec4(vertices[i], 1.0f);
+
+            min = glm::min(min, glm::vec3(worldPos));
+            max = glm::max(max, glm::vec3(worldPos));
+        }
+    }
+
+
+    // ВАЖНО: Хелпер для получения корректной финальной модельной матрицы с учетом пивота
+    glm::mat4 GetFinalModelMatrix() const {
+        glm::mat4 baseModel = transform.GetMatrix();
+
+        // Чанки мира стыкуем строго по углам сетки, а динамические объекты вращаем по центру!
+        if (type == VoxelObjectType::DunamicObject) {
+            glm::vec3 centerOffset = glm::vec3(voxelMap.size) * 0.5f;
+            return glm::translate(baseModel, -centerOffset);
+        }
+        return baseModel;
+    }
+
+    bool RemoveVoxelByRay(glm::vec3 worldRo, glm::vec3 worldRd, glm::ivec3& outHitPos, float maxDist = 1000.0f) {
+        // ИСПРАВЛЕНО: Берем финальную матрицу со смещенным пивотом, чтобы CPU и GPU были синхронны
+        glm::mat4 invModel = glm::inverse(GetFinalModelMatrix());
         glm::vec3 ro = glm::vec3(invModel * glm::vec4(worldRo, 1.0f));
         glm::vec3 rd = glm::normalize(glm::vec3(invModel * glm::vec4(worldRd, 0.0f)));
 
         float tMin, tMax;
         glm::vec3 boxMin(0.0f), boxMax(voxelMap.size.x, voxelMap.size.y, voxelMap.size.z);
 
-        // Пересечение с AABB объекта
         if (!intersectAABB(ro, rd, boxMin, boxMax, tMin, tMax)) return false;
         if (tMin > maxDist) return false;
 
         float t = std::max(tMin, 0.0f);
         glm::vec3 pos = ro + rd * (t + 0.001f);
 
-        // Простой DDA для поиска вокселя
         glm::ivec3 step(
             rd.x >= 0 ? 1 : -1,
             rd.y >= 0 ? 1 : -1,
@@ -150,7 +258,6 @@ public:
         glm::ivec3 voxelPos = glm::ivec3(glm::floor(pos));
         voxelPos = glm::clamp(voxelPos, glm::ivec3(0), glm::ivec3(voxelMap.size) - 1);
 
-        // Проверяем ближайшие воксели вдоль луча
         for (int i = 0; i < 256; i++) {
             if (voxelPos.x < 0 || voxelPos.x >= voxelMap.size.x ||
                 voxelPos.y < 0 || voxelPos.y >= voxelMap.size.y ||
@@ -159,11 +266,12 @@ public:
             Voxel v = voxelMap.GetVoxel(voxelPos.x, voxelPos.y, voxelPos.z);
             if (v.ID != 0) {
                 voxelMap.SetVoxel(voxelPos.x, voxelPos.y, voxelPos.z, 0);
+                outHitPos = voxelPos;
+
                 MarkVoxelsChanged();
                 return true;
             }
 
-            // DDA шаг
             glm::vec3 nextBoundary = glm::vec3(
                 (step.x > 0 ? voxelPos.x + 1 : voxelPos.x),
                 (step.y > 0 ? voxelPos.y + 1 : voxelPos.y),
@@ -185,55 +293,15 @@ public:
                 pos += rd * tToNext.z;
             }
         }
-
         return false;
     }
 
-    void PackObjectData(std::vector<uint32_t>& outMacroGrid, std::vector<Brick>& outBricks) const {
-        std::vector<uint32_t> localGrid(bricksX * bricksY * bricksZ, 0);
-
-        for (int bx = 0; bx < bricksX; ++bx) {
-            for (int by = 0; by < bricksY; ++by) {
-                for (int bz = 0; bz < bricksZ; ++bz) {
-
-                    Brick tempBrick = {};
-                    bool hasGeometry = false;
-
-                    for (int vy = 0; vy < 8; ++vy) {
-                        for (int vz = 0; vz < 8; ++vz) {
-                            for (int vx = 0; vx < 8; ++vx) {
-                                int gx = (bx << 3) + vx;
-                                int gy = (by << 3) + vy;
-                                int gz = (bz << 3) + vz;
-
-                                if (gx >= voxelMap.size.x || gy >= voxelMap.size.y || gz >= voxelMap.size.z)
-                                    continue;
-
-                                Voxel v = voxelMap.GetVoxel(gx, gy, gz);
-                                if (v.ID != 0) {
-                                    uint16_t idx = Brick::GetLinearIndex(vx, vy, vz);
-                                    tempBrick.Data[idx].ID = v.ID;
-                                    hasGeometry = true;
-                                }
-                            }
-                        }
-                    }
-
-                    if (hasGeometry) {
-                        uint32_t globalBrickId = static_cast<uint32_t>(outBricks.size());
-                        outBricks.push_back(tempBrick);
-                        localGrid[GetMacroIndex(bx, by, bz)] = globalBrickId;
-                    }
-                }
-            }
-        }
-
-        outMacroGrid.insert(outMacroGrid.end(), localGrid.begin(), localGrid.end());
-    }
-
     void UpdateBoundsAndMatrices(GpuEntityMeta& outMeta) {
-        outMeta.modelMatrix = transform.GetMatrix();
-        outMeta.invModelMatrix = glm::inverse(outMeta.modelMatrix);
+        // ИСПРАВЛЕНО: Используем единую функцию рассчета финальной матрицы
+        glm::mat4 finalModel = GetFinalModelMatrix();
+
+        outMeta.modelMatrix = finalModel;
+        outMeta.invModelMatrix = glm::inverse(finalModel);
 
         glm::vec3 localMin(0.0f);
         glm::vec3 localMax(voxelMap.size.x, voxelMap.size.y, voxelMap.size.z);
@@ -247,69 +315,34 @@ public:
 
         glm::vec3 worldMin(FLT_MAX), worldMax(-FLT_MAX);
         for (int i = 0; i < 8; i++) {
-            glm::vec3 worldCorner = glm::vec3(outMeta.modelMatrix * glm::vec4(corners[i], 1.0f));
+            glm::vec3 worldCorner = glm::vec3(finalModel * glm::vec4(corners[i], 1.0f));
             worldMin = glm::min(worldMin, worldCorner);
             worldMax = glm::max(worldMax, worldCorner);
         }
 
+        // ДОПИСАНО: Корректно закрываем расчет AABB для GPU BVH дерева
         outMeta.boxMin = glm::vec4(worldMin, 0.0f);
         outMeta.boxMax = glm::vec4(worldMax, 0.0f);
-        outMeta.sizeInBricks = glm::ivec4(bricksX, bricksY, bricksZ, 0);
-        outMeta.sizeInVoxels = glm::ivec4(voxelMap.size.x, voxelMap.size.y, voxelMap.size.z, 0);
+
+        outMeta.sizeInBricks.x = bricksX;
+        outMeta.sizeInBricks.y = bricksY;
+        outMeta.sizeInBricks.z = bricksZ;
+
+        outMeta.sizeInVoxels.x = voxelMap.size.x;
+        outMeta.sizeInVoxels.y = voxelMap.size.y;
+        outMeta.sizeInVoxels.z = voxelMap.size.z;
 
         isDirty = false;
         transform.isDirty = false;
     }
 
-    // Метод для отметки изменений вокселей
     void MarkVoxelsChanged() {
         voxelsChanged = true;
         isDirty = true;
     }
 
-    // Метод для отметки изменений материалов
     void MarkMaterialsChanged() {
         materialsChanged = true;
         isDirty = true;
-    }
-    
-    
-};
-
-struct MemoryBlock {
-    size_t offset;
-    size_t size;
-};
-
-class GpuPoolManager {
-public:
-    size_t totalSize;
-    std::vector<MemoryBlock> freeBlocks; // Список пустых дыр в памяти
-
-    GpuPoolManager(size_t maxSize) {
-        totalSize = maxSize;
-        freeBlocks.push_back({ 0, maxSize }); // Изначально вся память свободна
-    }
-
-    // Возвращает смещение (offset) в GPU буфере
-    size_t Allocate(size_t size) {
-        for (auto it = freeBlocks.begin(); it != freeBlocks.end(); ++it) {
-            if (it->size >= size) {
-                size_t allocatedOffset = it->offset;
-                if (it->size == size) {
-                    freeBlocks.erase(it);
-                }
-                else {
-                    it->offset += size;
-                    it->size -= size;
-                }
-                return allocatedOffset;
-            }
-        }
-    }
-
-    void Free(size_t offset, size_t size) {
-        freeBlocks.push_back({ offset, size });
-        // Тут можно сделать дефрагментацию (слияние соседних пустых блоков)
     }
 };
