@@ -542,8 +542,9 @@ void VoxelManager::Update(float dt) {
         }
     }
 
-
+    
     UpdateBVH();
+    
 
 
     UpdatePendingChunksGpu();
@@ -839,14 +840,24 @@ int VoxelManager::getTextureCoord(int globalCoord)
 
 void VoxelManager::UpdateBVH()
 {
+
+    if (activeObjects.empty()) {
+        // Если объектов нет - очищаем всю карту BVH
+        ClearAllBVH();
+        return;
+    }
+
+    // 1. ОЧИЩАЕМ ВСЮ КАРТУ BVH перед обновлением
+    // Это решает проблему со старыми данными
+    ClearAllBVH();
     bvhNodes.clear();
     bvhNodes.emplace_back(); // dummy node at index 0
 
     std::unordered_map<glm::ivec3, std::vector<uint32_t>> chunks;
 
-    for (auto& [id, obj] : activeObjects)  // Добавьте & для избежания копирования
+    for (auto& [id, obj] : activeObjects) 
     {
-        glm::vec3 min = obj.min;
+         glm::vec3 min = obj.min;
         glm::vec3 max = obj.max;
 
         glm::ivec3 cmin;
@@ -868,11 +879,12 @@ void VoxelManager::UpdateBVH()
             }
         }
     }
-
     // Строим BVH для каждого чанка
     for (auto& [pos, ids] : chunks)
     {
-        BuildChunkBVH(ids, pos);
+        uint32_t root = BuildChunkBVH(ids, pos);
+
+        SetDataInChunkTex(pos.x,pos.y,pos.z, root,bvhMap);
     }
 }
 
@@ -894,6 +906,7 @@ uint32_t VoxelManager::BuildRecursive(const std::vector<uint32_t>& objects,
     size_t to)
 {
     BVHNode node;
+
     node.boxMin = glm::vec4(FLT_MAX, FLT_MAX, FLT_MAX, -1.0f);
     node.boxMax = glm::vec4(-FLT_MAX, -FLT_MAX, -FLT_MAX, -1.0f);
     node.metaData = glm::ivec4(-1);
@@ -916,7 +929,7 @@ uint32_t VoxelManager::BuildRecursive(const std::vector<uint32_t>& objects,
     }
 
     // Лист: если меньше или равно 4 объектов
-    if (to - from <= 4) {
+    if (to - from == 1) {
         // В листе храним индекс первого объекта
         node.metaData.x = static_cast<int>(objects[indices[from]]);
         node.boxMin.w = -1.0f;
@@ -940,7 +953,8 @@ uint32_t VoxelManager::BuildRecursive(const std::vector<uint32_t>& objects,
             float centerA = (itA->second.min[axis] + itA->second.max[axis]) * 0.5f;
             float centerB = (itB->second.min[axis] + itB->second.max[axis]) * 0.5f;
             return centerA < centerB;
-        });
+        }
+    );
 
     // Разбиваем пополам
     size_t mid = from + (to - from) / 2;
@@ -956,4 +970,20 @@ uint32_t VoxelManager::BuildRecursive(const std::vector<uint32_t>& objects,
 
     bvhNodes.push_back(node);
     return static_cast<uint32_t>(bvhNodes.size() - 1);
+}
+
+void VoxelManager::ClearAllBVH() {
+    glBindTexture(GL_TEXTURE_3D, bvhMap);
+
+    // Создаем временный буфер с нулями
+    const uint32_t TEXTURE_SIZE = 64; // или твой размер
+    std::vector<uint32_t> zeroData(TEXTURE_SIZE * TEXTURE_SIZE * TEXTURE_SIZE, 0);
+
+    // Заполняем всю текстуру нулями
+    glTexSubImage3D(GL_TEXTURE_3D, 0,
+        0, 0, 0,
+        TEXTURE_SIZE, TEXTURE_SIZE, TEXTURE_SIZE,
+        GL_RED_INTEGER, GL_UNSIGNED_INT, zeroData.data());
+
+    glBindTexture(GL_TEXTURE_3D, 0);
 }

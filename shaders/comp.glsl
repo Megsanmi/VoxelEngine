@@ -84,6 +84,7 @@ uniform vec3 lightDir = vec3(0.5, 0.6, 0.7);
 uniform float time;
 uniform int NumEntities = 2; // Передаем общее количество объектов: objects.size()
 uniform int NumChunks = 2; 
+uniform bool debugFlag = false; 
 
 // ==========================================
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -538,6 +539,7 @@ bool traceChunkObject(ChunkMeta meta, vec3 worldRo, vec3 worldRd, inout float cl
 
     return false;
 }
+
 bool traceBVH(uint rootNode, vec3 ro, vec3 rd, inout float closestT, out uint matID, out vec3 normal){
     matID = 0;
     normal = vec3(0);
@@ -570,12 +572,12 @@ bool traceBVH(uint rootNode, vec3 ro, vec3 rd, inout float closestT, out uint ma
             
             // Вызываем traceVoxelObject для проверки пересечения
             if (traceVoxelObject(objMeta, ro, rd, tObj, tempMatID, tempNormal)) {
-                if (tObj < minHitT && tObj > 0.0) {
-                    minHitT = tObj;
-                    matID = tempMatID;
-                    normal = tempNormal;
-                    hitFound = true;
-                }
+                 
+                minHitT = tObj;
+                matID = tempMatID;
+                normal = tempNormal;
+                hitFound = true;
+                
             }
         } else {
             // Внутренний узел - добавляем дочерние узлы
@@ -622,8 +624,7 @@ bool traceBVH(uint rootNode, vec3 ro, vec3 rd, inout float closestT, out uint ma
     return false;
 }
 
-bool traceChunkGrid(vec3 ro, vec3 rd, out uint hitMaterialID, out vec3 normal, inout float finalT)
-{
+bool traceChunkGrid(vec3 ro, vec3 rd, out uint hitMaterialID, out vec3 normal, inout float finalT){
     hitMaterialID = 0u;
     normal = vec3(0.0);
     bool hitAny = false;
@@ -641,7 +642,7 @@ bool traceChunkGrid(vec3 ro, vec3 rd, out uint hitMaterialID, out vec3 normal, i
     
     float t = 0.0;
 
-    for (int i = 0; i < 15; i++) {
+    for (int i = 0; i < 32; i++) {
         // ОПТИМИЗАЦИЯ: Если текущий шаг луча по сетке чанков улетел ДАЛЬШЕ, 
         // чем любое уже найденное пересечение (например, воксель танка в предыдущем чанке)
         if (t >= finalT) {
@@ -674,7 +675,7 @@ bool traceChunkGrid(vec3 ro, vec3 rd, out uint hitMaterialID, out vec3 normal, i
             float tObj = finalT;
             uint objMatID;
             vec3 objNormal;
-
+            if(debugFlag) return true;
             // Запускаем трассировку BVH объектов для этого региона
             if (traceBVH(bvhNodeID, ro, rd, tObj, objMatID, objNormal)) {
                 if (tObj < finalT) {

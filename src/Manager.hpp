@@ -101,7 +101,7 @@ public:
     std::vector<glm::ivec3> chunksInGeneration; // Храним сетку координат, которые сейчас в фоне
     std::unordered_map<glm::ivec3, uint32_t> chunkIDs;
 
-    const int CHUNK_SIZE_METERS = 6.4;
+    const float CHUNK_SIZE_METERS = 6.4;
     std::unordered_map<uint32_t, uint32_t> chunkMacroOffsets;
     std::vector<bool> chunkSlotInUse;
     uint32_t currentGpuChunksCapacity = 0;
@@ -300,6 +300,7 @@ public:
     uint32_t BuildRecursive(const std::vector<uint32_t>& objects, std::vector<size_t>& indices, size_t from, size_t to);
     
     void UpdateBVH();
+    void ClearAllBVH();
 };
 
     

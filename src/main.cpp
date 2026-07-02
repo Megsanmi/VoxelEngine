@@ -8,6 +8,8 @@
 #include "UI.hpp"
 #include "Ray.hpp"
 #include "StaticGrid.hpp"
+#include "VoxelModifier.hpp"
+#include "PhysicsWorld.hpp"
 
 
 
@@ -23,11 +25,9 @@ int height = 1024;
 
 int main()
 {
-    // 1. Инициализация GLFW
     if (!glfwInit())
         return -1;
 
-    // 2. Создание окна
     GLFWwindow* window = glfwCreateWindow(width, height, "VoxelEngine", nullptr, nullptr);
     if (!window)
     {
@@ -35,10 +35,8 @@ int main()
         return -1;
     }
 
-    // 3. Делаем контекст текущим
     glfwMakeContextCurrent(window);
 
-    // Инициализируем GLAD !!!
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
     {
         std::cout << "Failed to initialize GLAD" << std::endl;
@@ -46,13 +44,10 @@ int main()
         return -1;
     }
 
-    // Теперь функции OpenGL можно безопасно вызывать
     glEnable(GL_DEPTH_TEST);
 
-    // Вертикальная синхронизация 
     glfwSwapInterval(0);
 
-    // Создаем шейдер (теперь GLAD инициализирован, и glCreateShader сработает)
     ShaderProgram shader("shaders/raymarchingV.glsl", "shaders/raymarchingF.glsl");
     ShaderProgram compShader("shaders/comp.glsl");
 
@@ -79,10 +74,8 @@ int main()
     glGenTextures(1, &screenTexture);
     glBindTexture(GL_TEXTURE_2D, screenTexture);
 
-    // Создаем пустую текстуру под разрешение экрана
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
 
-    // Настройки фильтрации (для квада лучше всего GL_LINEAR или GL_NEAREST)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -98,16 +91,15 @@ int main()
     ui.scene = &scene;
 
     StaticGrid world(&scene.manager,2);
+    PhysicsSystem physicsSystem;
+    physicsSystem.Init();
 
-
-    scene.LoadVox("assets/castle.vox");
-    scene.LoadVox("assets/castle.vox");
-
-    //for(int x = 0;x<10;x++ )
-    //  //  for(int y = 0;y<10;y++ )
-    //        for(int z = 0;z<10;z++ )
-    //            scene.manager.GetObject(scene.LoadVox("assets/castle.vox")).transform.position = glm::vec3(x,1,z)*5.f;
-
+    //scene.LoadVox("assets/castle.vox");
+    uint32_t id = scene.LoadVox("assets/castle.vox");
+    scene.GetObject(id).physics.parentObj = &scene.GetObject(id);
+    scene.GetObject(id).physics.motionType = JPH::EMotionType::Dynamic;
+    physicsSystem.AddBody(&scene.GetObject(id).physics);
+    
     float dt;
     double timer = 0;
   
@@ -125,25 +117,51 @@ int main()
         dt = glfwGetTime() - timer;
         timer = glfwGetTime();
         
-        
+        physicsSystem.Update(dt);
+        physicsSystem.SyncAllBody();
 
         if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
         {
             float t = glfwGetTime();
             scene.SplitObject(0);
             //std::cout <<"time of splitting " << glfwGetTime() -  t<< std::endl;
-            // Ваши параметры камеры (мировые координаты)
+         
             glm::vec3 cameraPosition = scene.camera.GetPosition();
-            glm::vec3 cameraForward = scene.camera.getForward(); // Вектор направления взгляда
-            glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f); // Или ваш локальный Up камеры
-            float fov = 90.0f; // Угол обзора в градусах (например, 60 или 45)
+            glm::vec3 cameraForward = scene.camera.getForward(); 
+            glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f); 
+            float fov = 90.0f;
 
             Ray ray = GetRaytracingMouseRay(window, cameraPosition, cameraForward, cameraUp, fov);
             
             
-            scene.RemoveVoxelByRay(ray.origin, ray.direction);
+            std::vector<std::pair<float, uint32_t>> sortedObjectIds;
+
+            for (uint32_t id : scene.objectIDs) {
+                
+                const VoxelObject& obj = scene.manager.GetObject(id);
+
+                glm::vec3 objCenter = obj.transform.position;
+                float dist = glm::length(objCenter - ray.origin);
+                sortedObjectIds.push_back({ dist, id });
+            }
+            std::sort(sortedObjectIds.begin(), sortedObjectIds.end());
+
+            glm::ivec3 hitVoxelPos;
+
+            
+            for (auto& [dist, id] : sortedObjectIds) {
+                VoxelObject& obj = scene.manager.GetObject(id);
+
+                if (VoxelModifier::RemoveVoxelByRay(obj.voxelMap, obj.GetFinalModelMatrix(),ray.origin, ray.direction, hitVoxelPos)) {
+                    scene.manager.OnObjectVoxelsChanged(id, hitVoxelPos.x, hitVoxelPos.y, hitVoxelPos.z);
+
+                }
+            }
+            
+
+           
         }
-     
+        
         world.UpdateChunks(scene.camera.position);
 
         
@@ -159,7 +177,11 @@ int main()
         compShader.setVec3("cameraPos", scene.camera.GetPosition());
         compShader.setInt("NumEntities", scene.manager.MaxObjectsEverCreated());
         compShader.setInt("NumChunks", scene.manager.MaxChunksEverCreated());
-
+        if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
+        {
+            compShader.setBool("debugFlag",true);
+        }
+        else compShader.setBool("debugFlag", false);
         // Биндим текстуру экрана
         glBindImageTexture(0, screenTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 

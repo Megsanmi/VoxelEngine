@@ -14,6 +14,8 @@
 
 #include "Voxel.hpp"
 #include "imgui/imgui.h"
+#include "AABB.hpp"
+#include "PhysicsComponent.hpp"
 
 enum class VoxelObjectType : uint32_t {
     DunamicObject = 0, // Обычный объект (показываем в инспекторах, крутим, физика)
@@ -92,6 +94,7 @@ public:
     
     VoxelMap voxelMap;
 
+    PhysicsComponent physics;
     // Оператор перемещающего присваивания (ЕГО СЕЙЧАС НЕ ХВАТАЕТ)
     Chunk& operator=(Chunk&& other) noexcept = default;
 
@@ -101,6 +104,7 @@ public:
 
     Chunk() {
         voxelMap.size = glm::vec3(CHUNK_SIZE);
+        
 
     }
     uint32_t GetMacroIndex(int bx, int by, int bz) const {
@@ -128,16 +132,16 @@ public:
     Transform transform;
     VoxelMap voxelMap;
     Material materials[256];
+    PhysicsComponent physics;
 
     uint32_t id = 0;
 
     unsigned int macroGridOffset = 0;
     unsigned int matOffset = 0;
 
-    VoxelObjectType type = VoxelObjectType::DunamicObject;
 
-    glm::vec3 min;
-    glm::vec3 max;
+    glm::vec3 min = glm::vec3(0);
+    glm::vec3 max = glm::vec3(999999999999999);
 
     bool isDirty = true;
     bool voxelsChanged = true;
@@ -153,10 +157,15 @@ public:
         bricksX = (voxelMap.size.x + 7) >> 3;
         bricksY = (voxelMap.size.y + 7) >> 3;
         bricksZ = (voxelMap.size.z + 7) >> 3;
+
+        physics.parentObj = this;
+
     }
 
     VoxelObject() : bricksX(0), bricksY(0), bricksZ(0) {
         voxelMap.size = glm::uvec3(0);
+
+        physics.parentObj = this;
     }
 
     void Update(float dt) {
@@ -175,17 +184,7 @@ public:
         return static_cast<uint32_t>(bx + bz * bricksX + by * (bricksX * bricksZ));
     }
 
-    bool intersectAABB(glm::vec3 ro, glm::vec3 rd, glm::vec3 bmin, glm::vec3 bmax, float& tMin, float& tMax) {
-        glm::vec3 invRd = 1.0f / (rd + glm::vec3(1e-8f));
-        glm::vec3 t0 = (bmin - ro) * invRd;
-        glm::vec3 t1 = (bmax - ro) * invRd;
-        glm::vec3 tmin3 = glm::min(t0, t1);
-        glm::vec3 tmax3 = glm::max(t0, t1);
-        tMin = glm::max(glm::max(tmin3.x, tmin3.y), tmin3.z);
-        tMax = glm::min(glm::min(tmax3.x, tmax3.y), tmax3.z);
-        return tMin <= tMax && tMax > 0.0f;
-    }
-   
+    
     void CalculateWorldAABB() {
         // Локальные границы воксельного объекта (от 0 до размера в вокселях)
         glm::vec3 localMin(0.0f);
@@ -226,12 +225,9 @@ public:
     glm::mat4 GetFinalModelMatrix() const {
         glm::mat4 baseModel = transform.GetMatrix();
 
-        // Чанки мира стыкуем строго по углам сетки, а динамические объекты вращаем по центру!
-        if (type == VoxelObjectType::DunamicObject) {
-            glm::vec3 centerOffset = glm::vec3(voxelMap.size) * 0.5f;
-            return glm::translate(baseModel, -centerOffset);
-        }
-        return baseModel;
+        glm::vec3 centerOffset = glm::vec3(voxelMap.size) * 0.5f;
+        return glm::translate(baseModel, -centerOffset);
+            
     }
 
     bool RemoveVoxelByRay(glm::vec3 worldRo, glm::vec3 worldRd, glm::ivec3& outHitPos, float maxDist = 1000.0f) {
@@ -243,7 +239,7 @@ public:
         float tMin, tMax;
         glm::vec3 boxMin(0.0f), boxMax(voxelMap.size.x, voxelMap.size.y, voxelMap.size.z);
 
-        if (!intersectAABB(ro, rd, boxMin, boxMax, tMin, tMax)) return false;
+        if (!intersectRayAABB(ro, rd, boxMin, boxMax, tMin, tMax)) return false;
         if (tMin > maxDist) return false;
 
         float t = std::max(tMin, 0.0f);

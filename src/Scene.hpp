@@ -46,8 +46,9 @@ public:
     }
 
     void SplitObject(uint32_t objectIndex);
-    std::vector<VoxelIsland> FindIslands(const VoxelObject& srcObj);
     bool RemoveVoxelByRay(glm::vec3 rayOrigin, glm::vec3 rayDir);
+    std::vector<VoxelIsland> FindIslands(const VoxelObject& srcObj);
+
 
     // 4. КОМПОНЕНТЫ СИСТЕМЫ РЕНДЕРИНГА
     // Здесь остаются ТОЛЬКО те буферы, которые собираются со всей сцены глобально каждый кадр

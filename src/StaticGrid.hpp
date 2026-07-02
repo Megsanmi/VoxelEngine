@@ -14,7 +14,7 @@
 class StaticGrid {
 public:
     static constexpr int GRID_SIZE = 64;
-    int viewdist = 3;
+    int viewdist = 5;
 
     static constexpr float VOXEL_SIZE = 0.1f;
     static constexpr float CHUNK_WORLD_SIZE = 64.0f * VOXEL_SIZE;
@@ -40,42 +40,32 @@ public:
         manager->LoadWorldBasePalette(materials);
     }
     void UpdateChunks(glm::vec3 cameraPos) {
-        // 1. Считаем текущую позицию камеры в координатах СЕТКИ ЧАНКОВ.
-        // Делим позицию в метрах на физический размер чанка в метрах (6.4f).
+ 
         int centerChunkX = std::floor(cameraPos.x / CHUNK_WORLD_SIZE);
         int centerChunkZ = std::floor(cameraPos.z / CHUNK_WORLD_SIZE);
         int centerChunkY = std::floor(cameraPos.y / CHUNK_WORLD_SIZE);
 
-        
-
-        // 2. ЭТАП ЗАГРУЗКИ: Создаем новые чанки вокруг камеры
-        for (int y = -viewdist; y <= viewdist; y++)
-
+ 
         for (int z = -viewdist; z <= viewdist; z++) {
             for (int x = -viewdist; x <= viewdist; x++) {
-                glm::ivec3 chunkPos(centerChunkX + x, centerChunkY + y, centerChunkZ + z);
+                glm::ivec3 chunkPos(centerChunkX + x, 0, centerChunkZ + z);
                 LoadChunk(chunkPos);
             }
         }
-
-        // 3. ЭТАП ВЫГРУЗКИ: Собираем чанки, которые вылетели за пределы viewdist
+         
         std::vector<glm::ivec3> chunksToRemove;
 
         for (const auto& pair : manager->chunkIDs) {
-            // pair.first — это КЛЮЧ мапы, то есть логическая координата чанка в сетке (например: {2, 0, -1})
             glm::ivec3 cPos = pair.first;
 
-            // Считаем расстояние в чанках
             int distX = std::abs(cPos.x - centerChunkX);
             int distZ = std::abs(cPos.z - centerChunkZ);
 
-            // Если чанк вышел за дистанцию видимости + 1 (буфер стабильности)
             if (distX > (viewdist + 1) || distZ > (viewdist + 1)) {
                 chunksToRemove.push_back(cPos);
             }
         }
 
-        // Физически удаляем старые чанки
         for (const auto& pos : chunksToRemove) {
             manager->UnregisterChunk(manager->GetChunk(pos));
         }
@@ -104,51 +94,22 @@ public:
  
 
     // Циклы теперь просто заполняют воксели до одной фиксированной высоты targetWorldHeight
-    //for (int x = 0; x < GRID_SIZE; x++)
-    //{
-    //    for (int z = 0; z < GRID_SIZE; z++)
-    //    {
-    //        for (int y = 0; y < GRID_SIZE; y++)
-    //        {
-    //            int worldY = fabs(GlobalPos.z+ GlobalPos.x);
-
-    //            if(y<= worldY)
-    //                c->voxelMap.SetVoxel(x, y, z, 1);
-    //          
-    //        }
-    //    }
-    //}
-
-    // Генерация только ребер куба размером GRID_SIZE x GRID_SIZE x GRID_SIZE
     for (int x = 0; x < GRID_SIZE; x++)
     {
-        for (int y = 0; y < GRID_SIZE; y++)
+        for (int z = 0; z < GRID_SIZE; z++)
         {
-            for (int z = 0; z < GRID_SIZE; z++)
+            for (int y = 0; y < GRID_SIZE; y++)
             {
-                // Проверяем, находится ли точка на ребре куба
-                bool onEdge = false;
-                  //            // Проверяем X-грани (x == 0 или x == GRID_SIZE-1)
-                bool onXEdge = (x == 0 || x == GRID_SIZE - 1);
+                int worldY = (sin(float(GlobalPos.z + z) / 10.f) + sin(float(GlobalPos.x + x) / 10.f)) * 5;
 
-               // Проверяем Y-грани (y == 0 или y == GRID_SIZE-1)
-                bool onYEdge = (y == 0 || y == GRID_SIZE - 1);
-
-                // Проверяем Z-грани (z == 0 или z == GRID_SIZE-1)
-                bool onZEdge = (z == 0 || z == GRID_SIZE - 1);
-
-                // Точка на ребре, если как минимум две координаты находятся на границах
-                int edgeCount = 0;
-               if (onXEdge) edgeCount++;
-                if (onYEdge) edgeCount++;
-                if (onZEdge) edgeCount++;
-
-                onEdge = (edgeCount >= 2);
-                            if (onEdge)
+                if (y <= worldY + 10)
                     c->voxelMap.SetVoxel(x, y, z, 1);
+
             }
         }
     }
+
+   
     manager->InitiateChunkRegistration(std::move(c));
 }
 

@@ -3,17 +3,52 @@ project(VoxelEngine)
 
 set(CMAKE_CXX_STANDARD 17)
 
-# 1. Автоматически ищем ВСЕ файлы .cpp и .h в папке src и её подпапках
+# --- ГЛОБАЛЬНЫЕ НАСТРОЙКИ ДЛЯ JOLT (Должны быть ДО add_subdirectory) ---
+set(TARGET_UNIT_TESTS OFF CACHE BOOL "Disable Jolt tests" FORCE)
+set(USE_STATIC_MSVC_RUNTIME OFF CACHE BOOL "Disable /MT for Jolt" FORCE)
+set(TARGET_SAMPLES OFF CACHE BOOL "Disable Jolt samples" FORCE)
+set(TARGET_VIEWER OFF CACHE BOOL "Disable Jolt viewer" FORCE)
+set(LOG_ERRORS_TO_STDOUT ON CACHE BOOL "Log Jolt errors to stdout" FORCE)
+
+# Рекомендуется: включить RTTI в Jolt, чтобы он соответствовал вашему проекту
+set(CPP_RTTI_ENABLED ON CACHE BOOL "Enable RTTI in Jolt" FORCE)
+# ---------------------------------------------------------------------
+
+# 1. Поиск исходников
 file(GLOB_RECURSE ENGINE_SOURCES 
     "src/*.cpp" 
+    "src/*.hpp"
     "src/*.h"
 )
 
-# 2. Создаем исполняемый файл (теперь сюда достаточно передать переменную и glad)
+# 2. Создаем исполняемый файл
 add_executable(VoxelEngine
     ${ENGINE_SOURCES}
     external/glad/glad.c
- "src/scene.cpp" "src/vox_impl.cpp")
+)
+
+# Включаем Jolt в проект
+add_subdirectory(external/jolt/Build)
+
+# --- ГАРАНТИРОВАННОЕ ИСПРАВЛЕНИЕ ДЛЯ JOLT ---
+# Находим таргет Jolt и вручную подменяем флаг /MT на /MD для конфигурации Release
+if (MSVC)
+    # Настройка свойства для современных CMake (3.15+)
+    set_target_properties(Jolt PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+    )
+    
+    # Дополнительный сброс старых строковых флагов, которые Jolt выставляет вручную
+    get_target_property(JOLT_COMPILE_OPTIONS Jolt COMPILE_OPTIONS)
+    if (JOLT_COMPILE_OPTIONS)
+        string(REPLACE "/MT" "/MD" JOLT_COMPILE_OPTIONS "${JOLT_COMPILE_OPTIONS}")
+        set_target_properties(Jolt PROPERTIES COMPILE_OPTIONS "${JOLT_COMPILE_OPTIONS}")
+    endif()
+endif()
+# --------------------------------------------
+
+# Привязываем Jolt к вашему движку
+target_link_libraries(VoxelEngine PRIVATE Jolt)
 
 # GLM
 target_include_directories(VoxelEngine PRIVATE
@@ -26,7 +61,7 @@ target_include_directories(VoxelEngine PRIVATE
 )
 
 # ImGui
-add_library(imgui
+add_library(imgui STATIC
     "external/imgui/imgui/imgui.cpp"
     "external/imgui/imgui/imgui_draw.cpp"
     "external/imgui/imgui/imgui_tables.cpp"
@@ -45,29 +80,26 @@ target_link_libraries(VoxelEngine PRIVATE imgui)
 # GLFW
 add_subdirectory(external/glfw)
 
-#vox
+# vox
 target_include_directories(VoxelEngine PRIVATE
     external/ogtVox
 )
 
+# Линковка системных библиотек и GLFW
 target_link_libraries(VoxelEngine PRIVATE glfw opengl32)
-
 target_link_libraries(imgui PUBLIC glfw)
-
 
 set_target_properties(VoxelEngine PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
 
+# Копирование ресурсов
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/assets 
      DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 
-
 file(GLOB_RECURSE SHADER_FILES "shaders/*")
 
-
-
-# 2. Создаем кастомную цель, которая следит за изменениями в файлах
+# Кастомная цель для шейдеров
 add_custom_target(CopyShaders ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
     "${CMAKE_SOURCE_DIR}/shaders"
@@ -76,5 +108,4 @@ add_custom_target(CopyShaders ALL
     COMMENT "Copying updated shaders to build directory..."
 )
 
-# 3. Делаем так, чтобы наш движок зависел от этой цели
 add_dependencies(VoxelEngine CopyShaders)

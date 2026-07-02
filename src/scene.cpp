@@ -4,6 +4,7 @@
 #include <iostream>
 #include <cstring>
 #include <algorithm>
+#include "VoxelModifier.hpp"
 
 
 void VoxelScene::Init()
@@ -406,16 +407,15 @@ bool VoxelScene::RemoveVoxelByRay(glm::vec3 rayOrigin, glm::vec3 rayDir)
     }
     std::sort(sortedObjectIds.begin(), sortedObjectIds.end());
 
-    glm::ivec3 hitVoxelPos;
+    glm::ivec3 hitVoxelPos = glm::ivec3(0);
 
     // 2. Проверяем объекты от ближнего к дальнему
     for (auto& [dist, id] : sortedObjectIds) {
         // Получаем изменяемую ссылку на объект из менеджера
         VoxelObject& obj = manager.GetObject(id);
 
-        if (obj.RemoveVoxelByRay(rayOrigin, rayDir, hitVoxelPos)) {
-            // Объект сам стер воксель у себя в VoxelMap.
-            // Теперь заставляем менеджер синхронизировать этот брик с GPU:
+        if (VoxelModifier::RemoveVoxelByRay(obj.voxelMap,obj.GetFinalModelMatrix(), rayOrigin, rayDir, hitVoxelPos)) {
+            
             manager.OnObjectVoxelsChanged(id, hitVoxelPos.x, hitVoxelPos.y, hitVoxelPos.z);
             return true;
         }
