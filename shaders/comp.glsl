@@ -162,9 +162,11 @@ float pssign(float x) {
 bool traceVoxelObject(GpuEntityMeta meta, vec3 worldRo, vec3 worldRd, inout float closestT, out uint hitMaterialID, out vec3 normal) {
     normal = vec3(0.0);
 
+    // 1. ОБОЛОЧКА НА ВХОДЕ: Перевод луча в локальное пространство объекта
     vec3 ro = vec3(meta.invModelMatrix * vec4(worldRo, 1.0));
     vec3 rd = vec3(meta.invModelMatrix * vec4(worldRd, 0.0)); 
     
+    // Считаем масштаб изменения длины луча из-за масштабирования матрицы
     float rayScale = length(rd);
     vec3 rd_norm = rd / rayScale;
 
@@ -173,15 +175,13 @@ bool traceVoxelObject(GpuEntityMeta meta, vec3 worldRo, vec3 worldRd, inout floa
     
     if (!intersectAABB(ro, rd_norm, vec3(0.0), maxBounds, tMin, tMax)) return false;
 
-    vec3 worldLimitPoint = worldRo + worldRd * closestT;
-    vec3 localLimitPoint = vec3(meta.invModelMatrix * vec4(worldLimitPoint, 1.0));
-    float localClosestT = dot(localLimitPoint - ro, rd_norm);
+    // Переводим мировой closestT в шкалу локального нормализованного луча rd_norm
+    float localClosestT = closestT * rayScale;
     
     float t = max(tMin, 0.0);
     if (t >= localClosestT) return false;
     
     vec3 pos = ro + rd_norm * t;
-    pos += rd_norm * 0.001;
 
     ivec3 brickSize = meta.sizeInBricks.xyz;
     uint macroOffset = uint(meta.sizeInBricks.w);
@@ -198,20 +198,25 @@ bool traceVoxelObject(GpuEntityMeta meta, vec3 worldRo, vec3 worldRd, inout floa
         abs(rd_norm.y) < 1e-6 ? (rd_norm.y >= 0.0 ? 1e-6 : -1e-6) : rd_norm.y,
         abs(rd_norm.z) < 1e-6 ? (rd_norm.z >= 0.0 ? 1e-6 : -1e-6) : rd_norm.z
     );
-    vec3 deltaT = abs(1.0 / safeRd) * 8.0; 
+
+    // ТВОЯ ЧАНКОВАЯ ЛОГИКА: vDeltaT на 1 воксель, deltaT на 1 брик (8 вокселей)
+    vec3 vDeltaT = abs(1.0 / safeRd);
+    vec3 deltaT = vDeltaT * 8.0; 
 
     ivec3 brickPos = ivec3(floor(pos / 8.0));
     brickPos = clamp(brickPos, ivec3(0), brickSize - ivec3(1));
 
+    // Настройка sideT для макро-сетки
     vec3 sideT;
-    sideT.x = (step.x > 0) ? (float(brickPos.x + 1) * 8.0 - pos.x) * (deltaT.x / 8.0) : (pos.x - float(brickPos.x) * 8.0) * (deltaT.x / 8.0);
-    sideT.y = (step.y > 0) ? (float(brickPos.y + 1) * 8.0 - pos.y) * (deltaT.y / 8.0) : (pos.y - float(brickPos.y) * 8.0) * (deltaT.y / 8.0);
-    sideT.z = (step.z > 0) ? (float(brickPos.z + 1) * 8.0 - pos.z) * (deltaT.z / 8.0) : (pos.z - float(brickPos.z) * 8.0) * (deltaT.z / 8.0);
+    sideT.x = (step.x > 0) ? (float(brickPos.x + 1) * 8.0 - pos.x) * vDeltaT.x : (pos.x - float(brickPos.x) * 8.0) * vDeltaT.x;
+    sideT.y = (step.y > 0) ? (float(brickPos.y + 1) * 8.0 - pos.y) * vDeltaT.y : (pos.y - float(brickPos.y) * 8.0) * vDeltaT.y;
+    sideT.z = (step.z > 0) ? (float(brickPos.z + 1) * 8.0 - pos.z) * vDeltaT.z : (pos.z - float(brickPos.z) * 8.0) * vDeltaT.z;
+    sideT += t;
 
     ivec3 mask = ivec3(0);
     bool hitFound = false;
 
-    // --- ЦИКЛ МАКРО-DDA (ПО БРИКАМ) ---
+    // --- ЦИКЛ МАКРО-DDA (ПОЛНАЯ КОПИЯ РАБОЧЕГО ЧАНКОВОГО) ---
     for(int i = 0; i < STEPS; i++) {
         if (t >= localClosestT || t >= tMax) break;
 
@@ -223,7 +228,7 @@ bool traceVoxelObject(GpuEntityMeta meta, vec3 worldRo, vec3 worldRd, inout floa
         
         uint localMacroIdx = uint(brickPos.x + (brickPos.z * brickSize.x) + (brickPos.y * (brickSize.x * brickSize.z)));
         uint brickIdx = macroGridLenta[macroOffset + localMacroIdx];
-        
+
         if (brickIdx != 0u) {
             vec3 bMin = vec3(brickPos * 8);
             vec3 bMax = bMin + vec3(8.0);
@@ -231,141 +236,90 @@ bool traceVoxelObject(GpuEntityMeta meta, vec3 worldRo, vec3 worldRd, inout floa
             
             if (intersectAABB(ro, rd_norm, bMin, bMax, vTMin, vTMax)) {
                 float vt_entry = max(vTMin, t);
-                vec3 vPos = ro + rd_norm * vt_entry;
-                vPos += vec3(step) * 0.0005;  
+                vec3 vPos = ro + rd_norm * (vt_entry + 0.0001); 
 
                 ivec3 voxelPos = ivec3(floor(vPos));
-               
-                if (voxelPos.x < 0 || voxelPos.x >= meta.sizeInVoxels.x ||
-                    voxelPos.y < 0 || voxelPos.y >= meta.sizeInVoxels.y ||
-                    voxelPos.z < 0 || voxelPos.z >= meta.sizeInVoxels.z) {
-                    
-                    if (sideT.x < sideT.y) {
-                        if (sideT.x < sideT.z) { sideT.x += deltaT.x; brickPos.x += step.x; t = sideT.x - deltaT.x; }
-                        else { sideT.z += deltaT.z; brickPos.z += step.z; t = sideT.z - deltaT.z; }
-                    } else {
-                        if (sideT.y < sideT.z) { sideT.y += deltaT.y; brickPos.y += step.y; t = sideT.y - deltaT.y; }
-                        else { sideT.z += deltaT.z; brickPos.z += step.z; t = sideT.z - deltaT.z; }
-                    }
-                    continue; 
-                }
-
-                vec3 vDeltaT = abs(1.0 / safeRd);
+                voxelPos = clamp(voxelPos, brickPos * 8, brickPos * 8 + ivec3(7));
                 
                 vec3 vSideT;
                 vSideT.x = (step.x > 0) ? (float(voxelPos.x + 1) - vPos.x) * vDeltaT.x : (vPos.x - float(voxelPos.x)) * vDeltaT.x;
                 vSideT.y = (step.y > 0) ? (float(voxelPos.y + 1) - vPos.y) * vDeltaT.y : (vPos.y - float(voxelPos.y)) * vDeltaT.y;
                 vSideT.z = (step.z > 0) ? (float(voxelPos.z + 1) - vPos.z) * vDeltaT.z : (vPos.z - float(voxelPos.z)) * vDeltaT.z;
-                
-                ivec3 vMask = ivec3(0);
+                vSideT += vt_entry;
 
-                vec3 distToNext = vec3(
-                    vSideT.x / vDeltaT.x,
-                    vSideT.y / vDeltaT.y,
-                    vSideT.z / vDeltaT.z
-                );
+                // Железобетонный стартовый маск входа через плоскости куба (без просадки FPS)
+                ivec3 vMask = ivec3(0);
+                vec3 vBound = vec3(voxelPos) + vec3(step.x > 0 ? 0.0 : 1.0, step.y > 0 ? 0.0 : 1.0, step.z > 0 ? 0.0 : 1.0);
+                vec3 tPlane = (vBound - ro) / safeRd;
+                float maxTPlane = max(max(tPlane.x, tPlane.y), tPlane.z);
                 
-                if (distToNext.x > distToNext.y && distToNext.x > distToNext.z) {
-                    vMask = ivec3(1, 0, 0);
-                } else if (distToNext.y > distToNext.z) {
-                    vMask = ivec3(0, 1, 0);
-                } else {
-                    vMask = ivec3(0, 0, 1);
-                }
+                if (maxTPlane == tPlane.x)      vMask = ivec3(1, 0, 0);
+                else if (maxTPlane == tPlane.y) vMask = ivec3(0, 1, 0);
+                else                            vMask = ivec3(0, 0, 1);
 
                 int microSteps = 0;
                 float currentVt = vt_entry;
                 
+                // --- МИКРО-ЦИКЛ ---
                 while (microSteps++ < MICRO_STEPS) {
-                    if (currentVt > vTMax + 0.0001 || currentVt >= localClosestT) break;
-                    
-                    if (voxelPos.x < 0 || voxelPos.x >= meta.sizeInVoxels.x ||
-                        voxelPos.y < 0 || voxelPos.y >= meta.sizeInVoxels.y ||
-                        voxelPos.z < 0 || voxelPos.z >= meta.sizeInVoxels.z) break;
-                    
-                    if ((voxelPos >> 3) != brickPos) break;
+                    if (currentVt >= vTMax || currentVt >= localClosestT) break;
+                    if ((voxelPos >> 3) != brickPos) break; 
                     
                     int vx = voxelPos.x & 7;
                     int vy = voxelPos.y & 7;
                     int vz = voxelPos.z & 7;
                     
                     uint voxelID = getVoxelID(brickIdx, vx, vy, vz);
+
                     if (voxelID != 0u) {
-                        localClosestT = currentVt;
-                        hitMaterialID = matOffset + voxelID;
+                        localClosestT = currentVt; // Записываем точное время
                         mask = vMask;
+                        hitMaterialID = matOffset + voxelID;
                         hitFound = true;
                         break;
                     }
                     
-                    // Шаг: currentVt = минимальное vSideT (до увеличения)
                     if (vSideT.x < vSideT.y) {
-                        if (vSideT.x < vSideT.z) {
-                            currentVt = vSideT.x;
-                            vSideT.x += vDeltaT.x;
-                            voxelPos.x += step.x;
-                            vMask = ivec3(1, 0, 0);
-                        } else {
-                            currentVt = vSideT.z;
-                            vSideT.z += vDeltaT.z;
-                            voxelPos.z += step.z;
-                            vMask = ivec3(0, 0, 1);
-                        }
+                        if (vSideT.x < vSideT.z) { currentVt = vSideT.x; vSideT.x += vDeltaT.x; voxelPos.x += step.x; vMask = ivec3(1, 0, 0); }
+                        else                     { currentVt = vSideT.z; vSideT.z += vDeltaT.z; voxelPos.z += step.z; vMask = ivec3(0, 0, 1); }
                     } else {
-                        if (vSideT.y < vSideT.z) {
-                            currentVt = vSideT.y;
-                            vSideT.y += vDeltaT.y;
-                            voxelPos.y += step.y;
-                            vMask = ivec3(0, 1, 0);
-                        } else {
-                            currentVt = vSideT.z;
-                            vSideT.z += vDeltaT.z;
-                            voxelPos.z += step.z;
-                            vMask = ivec3(0, 0, 1);
-                        }
+                        if (vSideT.y < vSideT.z) { currentVt = vSideT.y; vSideT.y += vDeltaT.y; voxelPos.y += step.y; vMask = ivec3(0, 1, 0); }
+                        else                     { currentVt = vSideT.z; vSideT.z += vDeltaT.z; voxelPos.z += step.z; vMask = ivec3(0, 0, 1); }
                     }
                 }
+                
                 if (hitFound) break;
+                t = vTMax; // Просто переходим к выходу, макро-шаг сделает всё сам
             }
         }
         
-        // Шаг макро-DDA
+        // Автономный шаг макро-DDA
         if (sideT.x < sideT.y) {
-            if (sideT.x < sideT.z) { 
-                t = sideT.x;
-                sideT.x += deltaT.x; 
-                brickPos.x += step.x; 
-            }
-            else { 
-                t = sideT.z;
-                sideT.z += deltaT.z; 
-                brickPos.z += step.z; 
-            }
+            if (sideT.x < sideT.z) { t = sideT.x; sideT.x += deltaT.x; brickPos.x += step.x; }
+            else                     { t = sideT.z; sideT.z += deltaT.z; brickPos.z += step.z; }
         } else {
-            if (sideT.y < sideT.z) { 
-                t = sideT.y;
-                sideT.y += deltaT.y; 
-                brickPos.y += step.y; 
-            }
-            else { 
-                t = sideT.z;
-                sideT.z += deltaT.z; 
-                brickPos.z += step.z; 
-            }
+            if (sideT.y < sideT.z) { t = sideT.y; sideT.y += deltaT.y; brickPos.y += step.y; }
+            else                     { t = sideT.z; sideT.z += deltaT.z; brickPos.z += step.z; }
         }
     }
+
+    // 2. ОБОЛОЧКА НА ВЫХОДЕ: Перевод результатов работы чанковой математики в мир
     if (hitFound) {
-        vec3 localHitPoint = ro + rd_norm * localClosestT;
-        vec3 worldHitPoint = vec3(meta.modelMatrix * vec4(localHitPoint, 1.0));
-        closestT = dot(worldHitPoint - worldRo, worldRd);
+        // Переводим локальное время обратно в мировую дистанцию
+        closestT = localClosestT / rayScale;
         
-        vec3 localNormal = vec3(mask) * vec3(-step);
-        normal = normalize(mat3(meta.modelMatrix) * localNormal);
+        // Переводим локальную нормаль в мировую через транспонированную инверсную матрицу
+        vec3 localNormal = -vec3(step) * vec3(mask);
+        mat3 normalMatrix = transpose(mat3(meta.invModelMatrix));
+        normal = normalize(normalMatrix * localNormal);
         return true;
     }
-    
+
     return false;
 }
+
+
+
 bool traceChunkObject(ChunkMeta meta, vec3 worldRo, vec3 worldRd, inout float closestT, out uint hitMaterialID, out vec3 normal) {
     normal = vec3(0.0);
     uint macroOffset = uint(meta.pos.w);
@@ -532,7 +486,7 @@ bool traceChunkObject(ChunkMeta meta, vec3 worldRo, vec3 worldRd, inout float cl
     }
 
     if (hitFound) {
-        closestT = localClosestT * VOXEL_SIZE / rayScale;
+        closestT = localClosestT * VOXEL_SIZE ;
         normal = -vec3(step) * vec3(mask);
         return true;
     }

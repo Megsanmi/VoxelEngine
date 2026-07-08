@@ -9,7 +9,7 @@ class Camera
 public:
     Camera();
 
-    void Update(GLFWwindow* window, float dt);
+    void Update(const glm::vec3& playerEyePos, const glm::vec3& playerRotation);
 
     void SetPosition(const glm::vec3& pos);
     void SetRotation(const glm::vec3& rot);
@@ -22,12 +22,6 @@ public:
     void SetOrthographic(float left, float right, float bottom, float top, float nearP, float farP);
     glm::vec3 getForward() { return forward; };
 
-
-    void UpdateView();
-
-    void ProcessInput(GLFWwindow* window, float dt);
-    void ProcessMouse(GLFWwindow* window);
-
 public:
     glm::vec3 forward;
     glm::vec3 position;
@@ -36,7 +30,7 @@ public:
     glm::mat4 view;
     glm::mat4 projection;
 
-    float speed = 10.0f;
+    float speed = 0.0f;
     float sensitivity = 0.1f;
 
     bool firstMouse = true;

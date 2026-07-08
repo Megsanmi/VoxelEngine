@@ -4,12 +4,16 @@
 #include <iostream>
 #include "renderer/ShaderProgram.hpp"
 #include "renderer/camera.hpp"
-#include "scene.hpp"
-#include "UI.hpp"
+#include "Scene/scene.hpp"
+#include "UI/UI.hpp"
 #include "Ray.hpp"
 #include "StaticGrid.hpp"
-#include "VoxelModifier.hpp"
-#include "PhysicsWorld.hpp"
+#include "VoxelObject/VoxelModifier.hpp"
+#include "Scene/PhysicsWorld.hpp"
+#include "Player/Player.hpp"
+#include "steam_api.h" 
+#include "NetCode/NetWork.hpp"
+#include "NetCode/CallBacks.hpp"
 
 
 
@@ -22,9 +26,11 @@ float screenVertices[] = {
 int width = 1924;
 int height = 1024;
 
+float renderScale = 0.8;
 
 int main()
 {
+   
     if (!glfwInit())
         return -1;
 
@@ -35,18 +41,22 @@ int main()
         return -1;
     }
 
+    if (!SteamAPI_Init()) {
+        std::cerr << "failed: SteamAPI_Init() return false!" << std::endl;
+    }
+    
     glfwMakeContextCurrent(window);
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
     {
         std::cout << "Failed to initialize GLAD" << std::endl;
         glfwTerminate();
-        return -1;
+      
     }
 
     glEnable(GL_DEPTH_TEST);
 
-    glfwSwapInterval(0);
+    glfwSwapInterval(1);
 
     ShaderProgram shader("shaders/raymarchingV.glsl", "shaders/raymarchingF.glsl");
     ShaderProgram compShader("shaders/comp.glsl");
@@ -74,7 +84,7 @@ int main()
     glGenTextures(1, &screenTexture);
     glBindTexture(GL_TEXTURE_2D, screenTexture);
 
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (int)width * renderScale, (int)height * renderScale, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -90,22 +100,37 @@ int main()
     ui.Init(window);
     ui.scene = &scene;
 
-    StaticGrid world(&scene.manager,2);
-    PhysicsSystem physicsSystem;
-    physicsSystem.Init();
 
-    //scene.LoadVox("assets/castle.vox");
-    uint32_t id = scene.LoadVox("assets/castle.vox");
-    scene.GetObject(id).physics.parentObj = &scene.GetObject(id);
-    scene.GetObject(id).physics.motionType = JPH::EMotionType::Dynamic;
-    physicsSystem.AddBody(&scene.GetObject(id).physics);
+
+    StaticGrid world(&scene.manager,2);
     
+
+
     float dt;
     double timer = 0;
   
     
-    //world.LoadChunk(glm::ivec3(0));
-        
+    static bool rightButtonPressedLastFrame = false;
+    scene.LoadVox("assets/teapot.vox", glm::vec3(0,20,0));
+
+
+
+    Player player;
+    player.character = scene.manager.physicsWorld.CreateCharacter(JPH::Vec3(10, 15, 10));
+    player.controller = &scene.controller;
+
+    NetworkManager network(NetworkType::ENet);
+    
+    network.SetLogCallback([&ui](const std::string& message) {
+        ui.AddConsoleMessage(message);
+        });
+    network.Init();
+    ui.network = &network;
+
+    ui.AddConsoleMessage("[System] Welcome to VoxelEngine!");
+    ui.AddConsoleMessage("[System] Press ~ to open console");
+
+
     // 4. Главный цикл
     while (!glfwWindowShouldClose(window))
     {
@@ -117,15 +142,21 @@ int main()
         dt = glfwGetTime() - timer;
         timer = glfwGetTime();
         
-        physicsSystem.Update(dt);
-        physicsSystem.SyncAllBody();
+        world.UpdateChunks(scene.camera.position);
+        scene.manager.physicsWorld.UpdateVirtualCharacter(player.character, player.velocity, dt);
+
+
+        
+        player.Update(dt, scene.controller.PollKeyboardAndMouse(window));
+
+        scene.camera.Update(player.GetEyePosition(), player.GetRotation());
+        scene.Update(dt);
+
+        network.Update();
+
 
         if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
-        {
-            float t = glfwGetTime();
-            scene.SplitObject(0);
-            //std::cout <<"time of splitting " << glfwGetTime() -  t<< std::endl;
-         
+        {        
             glm::vec3 cameraPosition = scene.camera.GetPosition();
             glm::vec3 cameraForward = scene.camera.getForward(); 
             glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f); 
@@ -153,40 +184,53 @@ int main()
                 VoxelObject& obj = scene.manager.GetObject(id);
 
                 if (VoxelModifier::RemoveVoxelByRay(obj.voxelMap, obj.GetFinalModelMatrix(),ray.origin, ray.direction, hitVoxelPos)) {
+                    scene.SplitObject(id);
                     scene.manager.OnObjectVoxelsChanged(id, hitVoxelPos.x, hitVoxelPos.y, hitVoxelPos.z);
-
                 }
             }
-            
-
-           
         }
         
-        world.UpdateChunks(scene.camera.position);
+        bool isPressedNow = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
+        glm::vec3 cameraPosition = scene.camera.position;
+        glm::vec3 cameraForward = scene.camera.getForward();
+        glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
+        float fov = 90.0f;
 
-        
+        Ray ray = GetRaytracingMouseRay(window, cameraPosition, cameraForward, cameraUp, fov);
 
-        
-        scene.camera.Update(window, dt);
-        scene.Update(dt);
+        // 1. НАЖАТИЕ: Клик произошел именно в этом кадре
+        if (isPressedNow && !rightButtonPressedLastFrame)
+        {
+            scene.HandleMouseClick(ray.origin, ray.direction);
+        }
+        // 2. УДЕРЖАНИЕ И ПЕРЕМЕЩЕНИЕ: Кнопка зажата (и в этом, и в прошлом кадре)
+        else if (isPressedNow && rightButtonPressedLastFrame)
+        {
+            scene.HandleMouseMove(ray.origin, ray.direction);
+        }
+        // 3. ОТПУСКАНИЕ: Кнопку только что отпустили
+        else if (!isPressedNow && rightButtonPressedLastFrame)
+        {
+            scene.HandleMouseRelease();
+        }
+
+        rightButtonPressedLastFrame = isPressedNow;
 
         compShader.use();
         compShader.setFloat("time", (float)glfwGetTime());
-        compShader.setVec2("uResolution", glm::vec2(width, height)); // Используем переменные
+        compShader.setVec2("uResolution", glm::vec2(width * renderScale, height * renderScale)); // Используем переменные
         compShader.setMatrix4("viewMatrix", scene.camera.GetViewMatrix());
         compShader.setVec3("cameraPos", scene.camera.GetPosition());
         compShader.setInt("NumEntities", scene.manager.MaxObjectsEverCreated());
         compShader.setInt("NumChunks", scene.manager.MaxChunksEverCreated());
-        if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
-        {
-            compShader.setBool("debugFlag",true);
-        }
-        else compShader.setBool("debugFlag", false);
+
+        
+        
         // Биндим текстуру экрана
         glBindImageTexture(0, screenTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 
         // 2. ПРАВИЛЬНЫЙ ЗАПУСК: делим реальное разрешение на размер локальной группы (16)
-        glDispatchCompute((width + 15) / 16, (height + 15) / 16, 1);
+        glDispatchCompute((width * renderScale + 15) / 16, (height * renderScale + 15) / 16, 1);
 
         // Обязательный барьер
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);

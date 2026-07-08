@@ -46,13 +46,14 @@ public:
         int centerChunkY = std::floor(cameraPos.y / CHUNK_WORLD_SIZE);
 
  
-        for (int z = -viewdist; z <= viewdist; z++) {
-            for (int x = -viewdist; x <= viewdist; x++) {
-                glm::ivec3 chunkPos(centerChunkX + x, 0, centerChunkZ + z);
-                LoadChunk(chunkPos);
+        for (int y = -viewdist; y <= viewdist; y++) {
+            for (int z = -viewdist; z <= viewdist; z++) {
+                for (int x = -viewdist; x <= viewdist; x++) {
+                    glm::ivec3 chunkPos(centerChunkX + x, centerChunkY+y, centerChunkZ + z);
+                    LoadChunk(chunkPos);
+                }
             }
         }
-         
         std::vector<glm::ivec3> chunksToRemove;
 
         for (const auto& pair : manager->chunkIDs) {
@@ -60,8 +61,9 @@ public:
 
             int distX = std::abs(cPos.x - centerChunkX);
             int distZ = std::abs(cPos.z - centerChunkZ);
+            int distY = std::abs(cPos.y - centerChunkY);
 
-            if (distX > (viewdist + 1) || distZ > (viewdist + 1)) {
+            if (distX > (viewdist + 1) || distZ > (viewdist + 1) || distY > (viewdist + 1)) {
                 chunksToRemove.push_back(cPos);
             }
         }
@@ -82,7 +84,7 @@ public:
         
         CreateChunk(pos);
         
-        
+    
     }
 
     
@@ -94,7 +96,7 @@ public:
  
 
     // Циклы теперь просто заполняют воксели до одной фиксированной высоты targetWorldHeight
-    for (int x = 0; x < GRID_SIZE; x++)
+   /* for (int x = 0; x < GRID_SIZE; x++)
     {
         for (int z = 0; z < GRID_SIZE; z++)
         {
@@ -102,8 +104,27 @@ public:
             {
                 int worldY = (sin(float(GlobalPos.z + z) / 10.f) + sin(float(GlobalPos.x + x) / 10.f)) * 5;
 
-                if (y <= worldY + 10)
+                if (y == 0)
                     c->voxelMap.SetVoxel(x, y, z, 1);
+
+            }
+        }
+    }*/
+    int maxIdx = GRID_SIZE - 1;
+
+    for (int x = 0; x < GRID_SIZE; x++) {
+        for (int z = 0; z < GRID_SIZE; z++) {
+            for (int y = 0; y < GRID_SIZE; y++) {
+
+                // Проверяем, находится ли координата на границе чанка
+                bool isEdgeX = (x == 0 || x == maxIdx);
+                bool isEdgeY = (y == 0 || y == maxIdx);
+                bool isEdgeZ = (z == 0 || z == maxIdx);
+
+                // Если хотя бы две координаты на границе — это ребро куба
+                if ((isEdgeX && isEdgeY) || (isEdgeX && isEdgeZ) || (isEdgeY && isEdgeZ)) {
+                    c->voxelMap.SetVoxel(x, y, z, 1);
+                }
 
             }
         }

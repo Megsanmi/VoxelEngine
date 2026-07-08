@@ -20,7 +20,7 @@ file(GLOB_RECURSE ENGINE_SOURCES
     "src/*.hpp"
     "src/*.h"
 )
-
+#
 # 2. Создаем исполняемый файл
 add_executable(VoxelEngine
     ${ENGINE_SOURCES}
@@ -49,6 +49,28 @@ endif()
 
 # Привязываем Jolt к вашему движку
 target_link_libraries(VoxelEngine PRIVATE Jolt)
+
+# --- Steam API ---
+# Указываем CMake, где искать файлы библиотек (.lib) для линковки
+target_link_directories(VoxelEngine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/external/steam/lib)
+# Указываем точный путь к заголовочным файлам Steam SDK
+target_include_directories(VoxelEngine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/external/Steam/include)
+
+# Связываем проект с библиотекой (для Windows x64 используйте steam_api64)
+target_link_libraries(VoxelEngine PRIVATE steam_api64)
+
+
+#ENET
+# 1. Включаем папку с ENet в сборку (CMake сам найдёт файлы внутри)
+add_subdirectory(external/enet)
+
+# 2. Подключаем собранную библиотеку enet к вашему проекту
+target_link_libraries(VoxelEngine PRIVATE enet_static )
+
+# 3. Обязательно для Windows (без этого enet выдаст ошибки линковки сокетов)
+if(WIN32)
+    target_link_libraries(VoxelEngine PRIVATE winmm ws2_32)
+endif()
 
 # GLM
 target_include_directories(VoxelEngine PRIVATE
@@ -93,13 +115,34 @@ set_target_properties(VoxelEngine PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
 
-# Копирование ресурсов
-file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/assets 
-     DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 
+# =====================================================================
+# --- АВТОМАТИЗАЦИЯ СБОРКИ: РЕСУРСЫ, DLL И STEAM APPID ---
+# =====================================================================
+
+# 1. Безопасный поиск и поштучное копирование всех DLL из папки bin к .exe
+file(GLOB DLL_FILES "${CMAKE_CURRENT_SOURCE_DIR}/bin/*.dll")
+
+foreach(DLL_PATH ${DLL_FILES})
+    add_custom_command(TARGET VoxelEngine POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${DLL_PATH}"
+            "$<TARGET_FILE_DIR:VoxelEngine>"
+        COMMENT "Копирование зависимости: ${DLL_PATH}"
+    )
+endforeach()
+
+# 2. Создание правильного файла steam_appid.txt с вашим ID (сейчас тестовый 480)
+set(STEAM_APP_ID "480") 
+
+add_custom_command(TARGET VoxelEngine POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E echo "${STEAM_APP_ID}" > "$<TARGET_FILE_DIR:VoxelEngine>/steam_appid.txt"
+    COMMENT "Создание файла steam_appid.txt с ID: ${STEAM_APP_ID}"
+)
+
+# 3. Кастомная цель для копирования шейдеров
 file(GLOB_RECURSE SHADER_FILES "shaders/*")
 
-# Кастомная цель для шейдеров
 add_custom_target(CopyShaders ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
     "${CMAKE_SOURCE_DIR}/shaders"
@@ -109,3 +152,15 @@ add_custom_target(CopyShaders ALL
 )
 
 add_dependencies(VoxelEngine CopyShaders)
+
+file(GLOB_RECURSE ASSET_FILES "assets/*") 
+
+add_custom_target(CopyAssets ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_SOURCE_DIR}/assets"              # Твоя исходная папка с ассетами в корне
+    "$<TARGET_FILE_DIR:VoxelEngine>/assets"   # Куда копировать (рядом с VoxelEngine.exe)
+    DEPENDS ${ASSET_FILES}
+    COMMENT "Copying updated assets to build directory..."
+)
+
+add_dependencies(VoxelEngine CopyAssets)
